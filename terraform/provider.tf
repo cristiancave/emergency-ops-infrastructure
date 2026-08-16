@@ -7,14 +7,13 @@ terraform {
     }
   }
 
-  # Descomentar para usar S3 como backend (estado remoto)
-  # backend "s3" {
-  #   bucket         = "your-terraform-state-bucket"
-  #   key            = "emergency-ops/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   encrypt        = true
-  #   dynamodb_table = "terraform-locks"
-  # }
+  backend "s3" {
+    bucket         = "terraform-state-emergency-ops-149511939303"
+    key            = "emergency-ops/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "terraform-locks"
+  }
 }
 
 provider "aws" {
