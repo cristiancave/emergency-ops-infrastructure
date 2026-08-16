@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - develop
     paths:
       - 'terraform/**'
       - '.github/workflows/terraform.yml'
@@ -56,43 +55,8 @@ jobs:
       - name: Terraform Plan (Dev)
         working-directory: terraform
         run: terraform plan -var-file="environments/dev.tfvars" -out=tfplan-dev
-        if: github.event_name == 'pull_request' && github.base_ref == 'develop'
-
-      - name: Terraform Plan (Staging)
-        working-directory: terraform
-        run: terraform plan -var-file="environments/staging.tfvars" -out=tfplan-staging
-        if: github.event_name == 'pull_request' && github.base_ref == 'main'
-
-      - name: Terraform Plan (Prod)
-        working-directory: terraform
-        run: terraform plan -var-file="environments/prod.tfvars" -out=tfplan-prod
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-      - name: Comment PR with Plan
-        uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
-        with:
-          script: |
-            const fs = require('fs');
-            const planOutput = 'Plan output will be commented here';
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `\`\`\`\n${planOutput}\n\`\`\``
-            });
 
       - name: Terraform Apply (Dev)
         working-directory: terraform
-        run: terraform apply -auto-approve -var-file="environments/dev.tfvars"
-        if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
-
-      - name: Terraform Apply (Staging)
-        working-directory: terraform
-        run: terraform apply -auto-approve -var-file="environments/staging.tfvars"
+        run: terraform apply -auto-approve "tfplan-dev"
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-      - name: Upload Terraform State
-        working-directory: terraform
-        run: echo "Terraform state updated"
-        if: github.event_name == 'push'
