@@ -1,280 +1,206 @@
 # Guía de Primeros Pasos
 
+> Esta guía asume que estás retomando/operando el ambiente `dev` que ya existe. Si estás
+> desplegando desde cero en una cuenta AWS nueva, la sección "Bootstrap desde cero" al final
+> cubre eso.
+
 ## 📋 Requisitos Previos
 
-1. **AWS Account**: Cuenta AWS activa con permisos de administrador
-2. **Terraform**: Versión 1.0 o superior
-3. **AWS CLI**: Configurado con credenciales válidas
-4. **Docker**: Para compilar las imágenes de los microservicios
+1. **AWS Account** con permisos suficientes (IAM, VPC, ECS, RDS, ECR, ALB, Secrets Manager, SSM,
+   Cloud Map, X-Ray, CloudWatch)
+2. **AWS CLI** configurado con credenciales válidas — solo necesario para operar/debuggear
+   manualmente; el despliegue normal no requiere correr nada local (ver más abajo)
+3. **Terraform** >= 1.15 — solo si vas a iterar en Terraform localmente
+4. **GitHub CLI** (`gh`, opcional) — para ver el estado de los workflows sin ir al navegador
 
-## 🚀 Configuración Inicial
+No hace falta Docker instalado a menos que quieras buildear las imágenes localmente para
+debugging — el pipeline de CI/CD (GitHub Actions) hace el build normalmente.
 
-### 1. Clonar el repositorio
+## 🚀 Cómo se despliega esto (flujo real)
 
-```bash
-git clone <repo-url>
-cd emergency-ops-infrastructure
-```
+El despliegue **no es manual**. Es:
 
-### 2. Inicializar Terraform
+1. Código nuevo en [emergency-ops](https://github.com/cristiancave/emergency-ops) → push a
+   `main` → GitHub Actions corre `go test ./...`, y si pasa, hace `docker build` (contexto =
+   raíz del repo, porque `dispatch` y `triage` comparten el módulo local `pkg/` vía `go.work`)
+   y `docker push` a ECR con tag `latest` y con el SHA del commit. Autenticación vía OIDC — sin
+   credenciales AWS guardadas en GitHub.
+2. Infraestructura nueva en este repo → push a `main` → GitHub Actions corre
+   `terraform fmt -check`, `validate`, `plan` y **`apply` automático** contra `dev`.
+3. Si solo cambiaste código (paso 1) y las tasks de ECS ya estaban corriendo, hace falta forzar
+   que tomen la imagen nueva:
+   ```bash
+   aws ecs update-service --cluster emergency-ops-cluster --service emergency-ops-dispatch --force-new-deployment --region us-east-1
+   aws ecs update-service --cluster emergency-ops-cluster --service emergency-ops-triage --force-new-deployment --region us-east-1
+   ```
 
-```bash
-cd terraform
-terraform init
-```
+Ver `docs/GITHUB_OIDC.md` para el detalle de cómo está configurada la autenticación.
 
-Esto descargará los plugins necesarios y configurará el estado local.
+## 🛠️ Operar Terraform en tu máquina (para iterar más rápido)
 
-### 3. Validar la configuración
-
-```bash
-terraform validate
-terraform fmt -recursive
-```
-
-### 4. Revisar qué se va a crear
-
-Para el ambiente de **desarrollo**:
-
-```bash
-terraform plan -var-file="environments/dev.tfvars"
-```
-
-Esto mostrará todos los recursos que se crearán sin modificar nada.
-
-## 🐳 Preparar las Imágenes Docker
-
-Antes de desplegar, necesitas compilar y subir las imágenes Docker a ECR.
-
-### 1. Crear repositorios ECR
-
-```bash
-aws ecr create-repository \
-  --repository-name emergency-ops-dispatch \
-  --region us-east-1
-
-aws ecr create-repository \
-  --repository-name emergency-ops-triage \
-  --region us-east-1
-```
-
-### 2. Obtener credenciales de ECR
-
-```bash
-aws ecr get-login-password --region us-east-1 | \
-  docker login --username AWS --password-stdin <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
-```
-
-(Reemplaza `<ACCOUNT_ID>` con tu ID de cuenta AWS)
-
-### 3. Compilar y subir las imágenes
-
-```bash
-# Desde la carpeta del proyecto emergency-ops
-
-# Dispatch
-docker build -t dispatch-service:latest services/dispatch/
-docker tag dispatch-service:latest \
-  <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-dispatch:latest
-docker push \
-  <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-dispatch:latest
-
-# Triage
-docker build -t triage-service:latest services/triage/
-docker tag triage-service:latest \
-  <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-triage:latest
-docker push \
-  <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-triage:latest
-```
-
-## 🛠️ Desplegar la Infraestructura
-
-### Opción 1: Con Plan (Recomendado)
+Útil cuando estás debuggeando un cambio y no querés esperar el ciclo completo de CI/CD.
 
 ```bash
 cd terraform
-
-# Crear plan
-terraform plan \
-  -var-file="environments/dev.tfvars" \
-  -out=tfplan
-
-# Aplicar
+terraform init                                              # backend S3 ya configurado
+terraform plan -var-file="environments/dev.tfvars" -out=tfplan
 terraform apply tfplan
-```
-
-### Opción 2: Usando Make
-
-```bash
-make plan-dev
-make apply-dev
-```
-
-### Opción 3: Usando Terraform Directamente
-
-```bash
-terraform apply -var-file="environments/dev.tfvars"
-```
-
-## ✅ Verificar el Despliegue
-
-### 1. Obtener los outputs
-
-```bash
 terraform output
 ```
 
-Esto mostrará:
-- DNS name del ALB
-- Endpoints de los servicios
-- Log groups de CloudWatch
+Si aplicaste algo localmente, **el próximo push a `main` va a correr `terraform apply` de
+nuevo** contra el mismo state remoto (S3), así que no hay riesgo de "perder" el cambio ni de
+duplicar recursos — Terraform reconcilia. Ver `docs/EJEMPLOS.md` para más comandos.
 
-### 2. Probar los servicios
-
-```bash
-# Obtener la URL del ALB
-ALB_URL=$(terraform output -raw alb_dns_name)
-
-# Probar dispatch
-curl http://$ALB_URL/dispatch/health
-
-# Probar triage
-curl http://$ALB_URL/triage/health
-```
-
-### 3. Ver logs en CloudWatch
+## ✅ Verificar que el ambiente está sano
 
 ```bash
-# Ver logs del dispatch
-aws logs tail /ecs/emergency-ops-dispatch --follow
-
-# Ver logs del triage
-aws logs tail /ecs/emergency-ops-triage --follow
-```
-
-## 📊 Monitoreo
-
-### CloudWatch Metrics
-
-1. Ir a AWS Console → CloudWatch → Dashboards
-2. Ver métricas de ECS en tiempo real
-
-### Container Insights
-
-1. CloudWatch → Container Insights → Clusters
-2. Seleccionar `emergency-ops-cluster`
-
-### Health Checks
-
-```bash
-# Ver estado de tasks
+# Estado de los 5 servicios ECS
 aws ecs describe-services \
   --cluster emergency-ops-cluster \
-  --services emergency-ops-dispatch emergency-ops-triage \
-  --region us-east-1
+  --services emergency-ops-dispatch emergency-ops-triage emergency-ops-otel-collector emergency-ops-prometheus emergency-ops-grafana \
+  --region us-east-1 \
+  --query 'services[].{name:serviceName,desired:desiredCount,running:runningCount}' --output table
+
+# RDS
+aws rds describe-db-instances --db-instance-identifier emergency-ops-triage-db --region us-east-1 --query 'DBInstances[0].DBInstanceStatus'
+
+# Outputs de Terraform (URLs, nombres de recursos)
+terraform output
 ```
 
-## 🔄 Actualizar Configuración
-
-### Cambiar número de tareas
+Probar los servicios (⚠️ el ALB **no** enruta `/dispatch/health` ni `/triage/health` al
+healthcheck real — sus reglas de path solo conocen `/dispatch*` y `/triage*`, que van directo a
+las rutas de negocio de cada servicio; el healthcheck del ALB pega directo al contenedor, no
+pasa por esas reglas). Para probar de verdad, usar las rutas reales:
 
 ```bash
-terraform apply \
-  -var-file="environments/dev.tfvars" \
-  -var="dispatch_desired_count=3"
+ALB_URL=$(terraform output -raw alb_dns_name)
+
+# Clasificar una emergencia
+curl -X POST "http://$ALB_URL/triage" -H "Content-Type: application/json" -d '{
+  "report_id": "RPT-1", "patient_age": 45,
+  "symptoms": ["fiebre alta"], "description": "test"
+}'
+
+# Crear un despacho (OJO: incident_latitude/incident_longitude son campos PLANOS, no anidados)
+curl -X POST "http://$ALB_URL/dispatch" -H "Content-Type: application/json" -d '{
+  "report_id": "RPT-2", "patient_age": 45,
+  "symptoms": ["dolor torácico"], "description": "test",
+  "incident_latitude": 40.4168, "incident_longitude": -3.7038
+}'
 ```
 
-### Cambiar recursos de CPU/Memoria
+O mejor, correr el script que genera una mezcla de tráfico válido/inválido de una:
+```powershell
+.\scripts\generate-demo-traffic.ps1
+```
+
+### Ver logs
 
 ```bash
-terraform apply \
-  -var-file="environments/dev.tfvars" \
-  -var="dispatch_cpu=512" \
-  -var="dispatch_memory=1024"
+aws logs tail /ecs/emergency-ops-dispatch --follow --region us-east-1
+aws logs tail /ecs/emergency-ops-triage --follow --region us-east-1
 ```
 
-### Actualizar imágenes Docker
+### Ver métricas y trazas
 
-1. Compilar y subir nueva imagen a ECR
-2. Actualizar la imagen en ECR
-3. Recriar las tasks:
+- **Grafana**: `http://$ALB_URL:3000` (user `admin`, password en Secrets Manager — ver README)
+- **X-Ray**: consola AWS → Traces / Service map
+- **Container Insights**: CloudWatch → Container Insights → Clusters → `emergency-ops-cluster`
+
+## 🔄 Cambiar configuración
+
+### Cambiar número de tareas o recursos
 
 ```bash
-aws ecs update-service \
-  --cluster emergency-ops-cluster \
-  --service emergency-ops-dispatch \
-  --force-new-deployment \
-  --region us-east-1
+terraform apply -var-file="environments/dev.tfvars" -var="dispatch_desired_count=3"
+terraform apply -var-file="environments/dev.tfvars" -var="dispatch_cpu=512" -var="dispatch_memory=1024"
 ```
+
+### Forzar que ECS tome una imagen nueva de ECR
+
+```bash
+aws ecs update-service --cluster emergency-ops-cluster --service emergency-ops-triage --force-new-deployment --region us-east-1
+```
+
+## 💰 Pausar/reanudar (no genera costo mientras no lo usás)
+
+```bash
+# Pausar
+for svc in dispatch triage otel-collector prometheus grafana; do
+  aws ecs update-service --cluster emergency-ops-cluster --service "emergency-ops-$svc" --desired-count 0 --region us-east-1
+done
+aws rds stop-db-instance --db-instance-identifier emergency-ops-triage-db --region us-east-1
+
+# Reanudar
+aws rds start-db-instance --db-instance-identifier emergency-ops-triage-db --region us-east-1
+for svc in dispatch triage otel-collector prometheus grafana; do
+  aws ecs update-service --cluster emergency-ops-cluster --service "emergency-ops-$svc" --desired-count 1 --region us-east-1
+done
+```
+
+Los NAT Gateways y el ALB siguen corriendo (no tienen estado "pausado", solo se pueden destruir
+y recrear) — es el costo fijo menor que queda.
 
 ## 🧹 Limpiar Recursos
 
-⚠️ **Cuidado**: Esto eliminará todos los recursos de AWS creados.
+⚠️ **Cuidado**: esto elimina todos los recursos de AWS, incluida la RDS.
 
 ```bash
 terraform destroy -var-file="environments/dev.tfvars"
 ```
 
-## 🔐 Seguridad
-
-### Mejores Prácticas
-
-1. **Nunca comitear credenciales**: Usar `terraform.tfvars.local` (en .gitignore)
-2. **Backend remoto**: Usar S3 + DynamoDB para estado compartido
-3. **RBAC en AWS**: Usar IAM roles con permisos mínimos
-4. **Tagging**: Etiquetar todos los recursos
-5. **Backups**: Regular backups de la base de datos (si agregan RDS)
-
-### Configurar Backend Remoto
-
-Ver `README.md` en la sección "Configuración de Backend Remoto"
-
 ## 🆘 Troubleshooting
 
-### Error: "Access Denied" al hacer terraform init
+### Error: "Access Denied" al hacer terraform init/plan
 
 ```bash
-# Verificar credenciales AWS
-aws sts get-caller-identity
-
-# Configurar nuevas credenciales
-aws configure
+aws sts get-caller-identity   # verificar que las credenciales activas son las correctas
+aws configure                  # o reconfigurar si hace falta
 ```
 
-### Las tasks no están corriendo
+### Las tasks no están corriendo / reinician en loop
 
 ```bash
-# Ver logs detallados
-aws ecs describe-tasks \
-  --cluster emergency-ops-cluster \
-  --tasks <TASK_ARN> \
-  --region us-east-1
+aws ecs describe-services --cluster emergency-ops-cluster --services emergency-ops-<nombre> --region us-east-1 --query 'services[0].events[:10]'
 
-# Ver logs en CloudWatch
-aws logs get-log-events \
-  --log-group-name /ecs/emergency-ops-dispatch \
-  --log-stream-name <LOG_STREAM>
+TASK_ARN=$(aws ecs list-tasks --cluster emergency-ops-cluster --service-name emergency-ops-<nombre> --region us-east-1 --query 'taskArns[0]' --output text)
+aws ecs describe-tasks --cluster emergency-ops-cluster --tasks "$TASK_ARN" --region us-east-1
+
+aws logs tail /ecs/emergency-ops-<nombre> --since 10m --region us-east-1
 ```
 
-### ALB no está disponible
+### ALB no está disponible / target unhealthy
 
 ```bash
-# Verificar target groups
-aws elbv2 describe-target-health \
-  --target-group-arn <TARGET_GROUP_ARN> \
-  --region us-east-1
+aws elbv2 describe-target-health --target-group-arn <TARGET_GROUP_ARN> --region us-east-1
 ```
+
+### Necesito ver qué hay en la RDS sin exponerla a internet
+
+Ver la sección "Debugging: conectarse a la RDS" en el `README.md` (usa `aws ecs execute-command`
+sobre la task de `triage`, que ya tiene ECS Exec habilitado).
+
+## 🏗️ Bootstrap desde cero (cuenta AWS nueva)
+
+Si estás armando esto en una cuenta AWS distinta desde cero (no aplica al ambiente `dev` ya
+desplegado):
+
+1. **Backend de Terraform**: crear el bucket S3 + tabla DynamoDB (ver README, sección de
+   backend) y actualizar `provider.tf` con el nombre real del bucket.
+2. **OIDC para GitHub Actions**: seguir `docs/GITHUB_OIDC.md` — crear el proveedor OIDC, el IAM
+   Role con el trust policy scopeado a tus repos, y el secret `AWS_ROLE_TO_ASSUME` en GitHub.
+3. **Primer apply**: como todavía no hay imágenes en ECR, el primer `terraform apply` va a fallar
+   en los servicios ECS de `dispatch`/`triage` (no hay imagen que pullear). Aplicar primero solo
+   ECR (`terraform apply -target=aws_ecr_repository.dispatch -target=aws_ecr_repository.triage`),
+   pushear las imágenes (vía el workflow de CI/CD de `emergency-ops`, o manualmente con
+   `docker build -f services/dispatch/Dockerfile .` **desde la raíz** de `emergency-ops`), y
+   recién ahí aplicar el resto.
 
 ## 📚 Recursos Útiles
 
 - [Terraform AWS Provider Docs](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
 - [AWS ECS Documentation](https://docs.aws.amazon.com/ecs/)
 - [AWS Well-Architected Framework](https://aws.amazon.com/architecture/well-architected/)
-- [Emergency Ops GitHub Repository](https://github.com/your-org/emergency-ops)
-
-## 📞 Soporte
-
-Para problemas o preguntas:
-1. Revisar los logs de CloudWatch
-2. Usar `terraform show` para ver el estado actual
-3. Revisar los Architecture Decision Records (ADR) en `docs/ADR.md`
+- [emergency-ops](https://github.com/cristiancave/emergency-ops) — código de los servicios

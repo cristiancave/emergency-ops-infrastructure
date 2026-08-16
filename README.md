@@ -38,16 +38,10 @@ docs/
 ├── architecture.drawio        # Diagrama de arquitectura completo (abrir en app.diagrams.net)
 ├── Reporte_Tecnico_Emergency_Ops.docx  # Reporte técnico: arquitectura, decisiones, overhead
 ├── GITHUB_OIDC.md              # Cómo está configurado el IAM Role OIDC para CI/CD
-├── ADR.md                      # Architecture Decision Records (parcialmente desactualizado,
-│                                # ver nota abajo)
-├── SETUP.md                    # Guía de primeros pasos (desactualizado, ver nota abajo)
-└── EJEMPLOS.md                 # Comandos de referencia de Terraform (mayormente vigente)
+├── ADR.md                      # Architecture Decision Records (15 decisiones documentadas)
+├── SETUP.md                    # Guía de primeros pasos y operación del ambiente
+└── EJEMPLOS.md                 # Comandos de referencia de Terraform
 ```
-
-> **Nota sobre `docs/SETUP.md` y `docs/ADR.md`**: se escribieron antes de que ECR, RDS y el
-> stack de observabilidad pasaran a estar gestionados por Terraform. En particular, los pasos de
-> `SETUP.md` que dicen crear los repos ECR a mano con `aws ecr create-repository` **ya no
-> aplican** — chocarían con `ecr.tf`. La fuente de verdad para "cómo desplegar" es este README.
 
 ## 🚀 Cómo se despliega (CI/CD — flujo normal)
 
