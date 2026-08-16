@@ -100,6 +100,11 @@ resource "google_cloud_run_v2_service" "otel_collector" {
   name     = "emergency-ops-otel-collector"
   location = var.region
   ingress  = "INGRESS_TRAFFIC_ALL"
+  # El provider de Google protege Cloud Run contra "terraform destroy" por
+  # default. Este recurso es de laboratorio (mismo criterio que
+  # skip_final_snapshot/recovery_window_in_days=0 del lado AWS) — se
+  # necesita poder destruirlo limpio con un solo comando.
+  deletion_protection = false
 
   template {
     service_account = google_service_account.otel_collector.email
