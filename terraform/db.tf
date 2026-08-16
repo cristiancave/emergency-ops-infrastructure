@@ -72,6 +72,9 @@ resource "aws_db_instance" "triage" {
 # DATABASE_URL sin tener que ensamblar host/user/password por su cuenta.
 resource "aws_secretsmanager_secret" "triage_db_url" {
   name = "${var.project_name}-triage-database-url"
+  # dev/staging: permite recrear el secreto sin esperar el recovery window
+  # por defecto (30 días). En prod se prefiere mantenerlo por seguridad.
+  recovery_window_in_days = var.environment == "prod" ? 30 : 0
 
   tags = {
     Name = "${var.project_name}-triage-database-url"
