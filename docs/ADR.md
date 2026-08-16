@@ -422,3 +422,54 @@ del contenedor — que ya tiene red hacia la RDS — instalando `postgresql-clie
 - Cliente `psql` no viene preinstalado en la imagen (Alpine minimalista) — hay que instalarlo en
   cada sesión de exec, no queda persistido entre redeploys.
 
+---
+
+## ADR-016: Segundo OTel Collector en GCP (Cloud Run) con Cloud Trace en vez de Jaeger
+
+### Status
+ACCEPTED
+
+### Context
+El enunciado original describe el Collector desplegado en dos nubes en paralelo — "GCP: Cloud
+Run o GKE. AWS: ECS Fargate" — con Jaeger UI como backend de trazas nombrado explícitamente para
+el lado GCP. La app (`dispatch`/`triage`) sigue corriendo enteramente en AWS; lo que se evaluó
+acá fue cómo sumar el segundo Collector sin migrar toda la aplicación.
+
+Al intentar desplegar Jaeger en Cloud Run apareció una limitación real de la plataforma: un
+servicio de Cloud Run expone **un solo puerto externo**. Jaeger necesita dos alcanzables desde
+afuera — 16686 (UI) y 4317/4318 (receiver OTLP) — y no hay forma de exponer ambos en el mismo
+servicio sin backends compartidos (que Jaeger self-hosted, con storage en memoria, no tiene) o
+sin pasar a GKE.
+
+### Decision
+Desplegar el Collector en Cloud Run con receiver OTLP/HTTP como único puerto expuesto, y
+exportar trazas y métricas al `googlecloud` exporter (**Cloud Trace** + **Cloud Monitoring**) en
+vez de a un Jaeger self-hosted. La app en AWS manda cada traza dos veces en paralelo: al
+Collector de AWS (como siempre) y a este de GCP, vía un segundo exporter OTLP/HTTP registrado en
+el mismo `TracerProvider` (`pkg/telemetry.go`, campo `GCPOTLPEndpoint`).
+
+### Rationale
+- Mismo razonamiento que ADR-009 (X-Ray en vez de Jaeger/Tempo self-hosted para AWS): preferir
+  el backend de trazas administrado de la nube en cuestión evita infraestructura propia — acá,
+  además, evita un problema real de la plataforma (el límite de un puerto de Cloud Run), no solo
+  una preferencia de menor mantenimiento.
+- GKE sí resuelve el problema de multi-puerto (un `Service` de Kubernetes puede exponer varios),
+  pero implica un cluster con costo fijo de control plane (~$70/mes) solo para desplegar un
+  Collector — desproporcionado frente al resto de la infraestructura del proyecto.
+- Mandar tráfico real de la app (no un ping aislado) al segundo Collector demuestra propagación
+  de contexto cross-cloud de verdad: el mismo `trace_id` generado en un pod de ECS (AWS) es
+  buscable en la consola de Cloud Trace (GCP) — verificado end-to-end antes de dar el trabajo
+  por cerrado.
+
+### Consequences
+- El backend de trazas de GCP técnicamente no es "Jaeger" como nombra el enunciado original —
+  es una sustitución justificada por una limitación de plataforma, no una decisión arbitraria.
+- Dos state de Terraform completamente separados (`terraform/` en S3, `terraform-gcp/` en GCS),
+  dos proveedores, dos ciclos de vida — más superficie que mantener a cambio de la cobertura
+  multi-cloud.
+- El export a GCP usa OTLP/HTTP con TLS (no gRPC interno como en AWS) porque Cloud Run necesita
+  HTTPS público y el cliente Go de OTLP/gRPC-con-TLS-a-través-de-un-proxy-serverless tiene más
+  aristas que simplemente usar `otlptracehttp`.
+- Es un exporter *best-effort* adicional: si el Collector de GCP no está disponible, no afecta
+  el pipeline principal de AWS (son batchers independientes en el mismo `TracerProvider`).
+
