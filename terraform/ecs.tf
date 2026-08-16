@@ -85,6 +85,14 @@ resource "aws_ecs_task_definition" "dispatch" {
         {
           name  = "TRIAGE_SERVICE_URL"
           value = "http://${aws_lb.main.dns_name}"
+        },
+        {
+          name  = "ENVIRONMENT"
+          value = var.environment
+        },
+        {
+          name  = "OTEL_EXPORTER_OTLP_ENDPOINT"
+          value = "otel-collector.${var.project_name}.local:4317"
         }
       ]
       healthCheck = {
@@ -124,7 +132,8 @@ resource "aws_ecs_service" "dispatch" {
 
   depends_on = [
     aws_lb_listener.main,
-    aws_iam_role.ecs_task_execution_role
+    aws_iam_role.ecs_task_execution_role,
+    aws_ecs_service.otel_collector
   ]
 
   tags = {
@@ -210,6 +219,14 @@ resource "aws_ecs_task_definition" "triage" {
         {
           name  = "TRIAGE_PORT"
           value = tostring(var.triage_container_port)
+        },
+        {
+          name  = "ENVIRONMENT"
+          value = var.environment
+        },
+        {
+          name  = "OTEL_EXPORTER_OTLP_ENDPOINT"
+          value = "otel-collector.${var.project_name}.local:4317"
         }
       ]
       secrets = [
@@ -258,7 +275,8 @@ resource "aws_ecs_service" "triage" {
     aws_iam_role.ecs_task_execution_role,
     aws_db_instance.triage,
     aws_secretsmanager_secret_version.triage_db_url,
-    aws_iam_role_policy.ecs_task_execution_secrets
+    aws_iam_role_policy.ecs_task_execution_secrets,
+    aws_ecs_service.otel_collector
   ]
 
   tags = {

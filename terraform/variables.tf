@@ -107,6 +107,19 @@ variable "triage_db_instance_class" {
   default     = "db.t4g.micro"
 }
 
+# OTel Collector Variables
+variable "otel_collector_cpu" {
+  description = "CPU units for the OTel Collector task"
+  type        = number
+  default     = 256
+}
+
+variable "otel_collector_memory" {
+  description = "Memory in MB for the OTel Collector task"
+  type        = number
+  default     = 512
+}
+
 # Auto-scaling Variables
 variable "enable_autoscaling" {
   description = "Enable auto-scaling for services"
