@@ -14,6 +14,9 @@ tfplan*
 *~
 .DS_Store
 
+# Word lock files (created while a .docx is open, not real content)
+~$*
+
 # Logs
 *.log
 crash.log
