@@ -1,203 +1,235 @@
 # Emergency Ops - Infrastructure as Code
 
-Infraestructura en AWS para desplegar los microservicios de Emergency Ops usando Terraform.
+Infraestructura en AWS para desplegar y operar Emergency Ops: 2 microservicios (`dispatch` →
+`triage`) instrumentados con OpenTelemetry, más el stack de observabilidad completo (OTel
+Collector, Prometheus, Grafana) — todo definido en Terraform y desplegado vía CI/CD.
+
+El código de los servicios vive en [emergency-ops](https://github.com/cristiancave/emergency-ops).
 
 ## 📋 Requisitos
 
-- Terraform >= 1.0
-- AWS CLI configurado con credenciales válidas
+- Terraform >= 1.15 (la versión pineada en `.github/workflows/terraform.yml`)
+- AWS CLI configurado con credenciales válidas (solo para operar manualmente / debugging — el
+  despliegue normal lo hace CI/CD, no hace falta correr Terraform local)
 - Cuenta AWS activa
 
-## 🏗️ Estructura del Proyecto
+## 🏗️ Estructura del repositorio
 
 ```
 terraform/
-├── provider.tf              # Configuración de AWS provider
-├── variables.tf             # Definición de variables
-├── main.tf                  # VPC, Subnets, Security Groups, ALB
-├── ecs.tf                   # ECS Cluster, Task Definitions, Services
-├── outputs.tf               # Outputs de la infraestructura
-├── terraform.tfvars         # Valores por defecto
+├── provider.tf              # AWS provider + backend S3 (estado remoto, ya configurado)
+├── variables.tf              # Definición de variables
+├── main.tf                   # VPC, subnets, IGW, NAT, ALB, security groups base
+├── ecs.tf                    # Cluster ECS, task definitions y services de dispatch/triage
+├── ecr.tf                    # Repositorios ECR (dispatch, triage) + lifecycle policy
+├── db.tf                     # RDS PostgreSQL + Secrets Manager (connection string)
+├── collector.tf              # OTel Collector (ECS Fargate, ADOT) + Cloud Map + IAM
+├── monitoring.tf             # Prometheus + Grafana (ECS Fargate) + dashboard provisionado
+├── outputs.tf                 # Outputs (URLs, ARNs, nombres de recursos)
+├── terraform.tfvars           # Valores por defecto
 └── environments/
-    ├── dev.tfvars          # Variables para desarrollo
-    ├── staging.tfvars      # Variables para staging
-    └── prod.tfvars         # Variables para producción
+    ├── dev.tfvars            # Ambiente actualmente desplegado
+    ├── staging.tfvars
+    └── prod.tfvars
+scripts/
+└── generate-demo-traffic.ps1 # Genera tráfico mixto (2xx/4xx/5xx) contra el ALB para
+                                # poblar Grafana/X-Ray/CloudWatch con datos reales
+docs/
+├── architecture.drawio        # Diagrama de arquitectura completo (abrir en app.diagrams.net)
+├── Reporte_Tecnico_Emergency_Ops.docx  # Reporte técnico: arquitectura, decisiones, overhead
+├── GITHUB_OIDC.md              # Cómo está configurado el IAM Role OIDC para CI/CD
+├── ADR.md                      # Architecture Decision Records (parcialmente desactualizado,
+│                                # ver nota abajo)
+├── SETUP.md                    # Guía de primeros pasos (desactualizado, ver nota abajo)
+└── EJEMPLOS.md                 # Comandos de referencia de Terraform (mayormente vigente)
 ```
 
-## 🚀 Cómo Usar
+> **Nota sobre `docs/SETUP.md` y `docs/ADR.md`**: se escribieron antes de que ECR, RDS y el
+> stack de observabilidad pasaran a estar gestionados por Terraform. En particular, los pasos de
+> `SETUP.md` que dicen crear los repos ECR a mano con `aws ecr create-repository` **ya no
+> aplican** — chocarían con `ecr.tf`. La fuente de verdad para "cómo desplegar" es este README.
 
-### 1. Inicializar Terraform
+## 🚀 Cómo se despliega (CI/CD — flujo normal)
+
+**No hace falta correr Terraform en tu máquina para desplegar.** El flujo real es:
+
+1. Push a `main` en [emergency-ops](https://github.com/cristiancave/emergency-ops) → GitHub
+   Actions corre los tests y, si pasan, hace build + push de las imágenes Docker a ECR (contexto
+   de build = raíz del repo, porque ambos servicios comparten el módulo local `pkg/` vía
+   `go.work`).
+2. Push a `main` en **este repo** → GitHub Actions (`.github/workflows/terraform.yml`) corre
+   `terraform fmt -check`, `validate`, `plan` y **`apply` automático** contra el ambiente `dev`.
+3. Ambos workflows se autentican contra AWS vía **OIDC** (`docs/GITHUB_OIDC.md`) — no hay
+   credenciales estáticas guardadas como secret en GitHub.
+
+Si cambiaste solo Terraform (sin tocar código de los servicios), un push a este repo alcanza. Si
+cambiaste código de los servicios, ese push ya deja las imágenes `:latest` listas en ECR, pero
+**no** redeploya las tasks de ECS solo — para eso:
+
+```bash
+aws ecs update-service --cluster emergency-ops-cluster --service emergency-ops-dispatch --force-new-deployment --region us-east-1
+aws ecs update-service --cluster emergency-ops-cluster --service emergency-ops-triage --force-new-deployment --region us-east-1
+```
+
+## 🛠️ Operar Terraform manualmente (debugging / iteración rápida)
 
 ```bash
 cd terraform
-terraform init
-```
-
-### 2. Validar la Configuración
-
-```bash
-terraform validate
-terraform fmt -recursive
-```
-
-### 3. Planificar el Despliegue (Desarrollo)
-
-```bash
+terraform init                                            # backend S3 ya configurado
 terraform plan -var-file="environments/dev.tfvars" -out=tfplan
-```
-
-### 4. Aplicar los Cambios
-
-```bash
 terraform apply tfplan
-```
-
-### 5. Obtener los Outputs
-
-```bash
 terraform output
 ```
 
-## 🌍 Ambientes
+El estado remoto vive en S3 (`terraform-state-emergency-ops-149511939303`) con locking en
+DynamoDB (`terraform-locks`) — ya está migrado y configurado en `provider.tf`, no hace falta
+tocar nada para que funcione en equipo.
 
-### Desarrollo
-```bash
-terraform plan -var-file="environments/dev.tfvars"
-terraform apply -var-file="environments/dev.tfvars"
-```
-
-### Staging
-```bash
-terraform plan -var-file="environments/staging.tfvars"
-terraform apply -var-file="environments/staging.tfvars"
-```
-
-### Producción
-```bash
-terraform plan -var-file="environments/prod.tfvars"
-terraform apply -var-file="environments/prod.tfvars"
-```
-
-## 📊 Recursos Creados
+## 📊 Recursos que gestiona este Terraform
 
 ### Networking
-- VPC con CIDR configurable
-- 2-3 Public Subnets (una por AZ)
-- 2-3 Private Subnets (una por AZ)
-- NAT Gateways para salida a internet
-- Internet Gateway
-- Route Tables
+- VPC (`10.0.0.0/16`), 2 subnets públicas + 2 privadas (2 AZs), Internet Gateway, 2 NAT Gateways
+- Security groups por componente (ALB, ECS tasks, RDS, Collector, Prometheus, Grafana)
+- AWS Cloud Map (`emergency-ops.local`) — DNS privado para que dispatch/triage/Collector/
+  Prometheus se resuelvan entre sí sin depender de IPs de tarea (que cambian en cada deploy)
 
-### Compute (ECS)
-- ECS Cluster con CloudWatch Container Insights
-- 2 Task Definitions (Dispatch + Triage)
-- 2 ECS Services con Fargate
-- Auto-scaling configurable por servicio
-- Health checks integrados
+### Compute (ECS Fargate) — 5 servicios en `emergency-ops-cluster`
+| Servicio | Rol |
+|---|---|
+| `emergency-ops-dispatch` | dispatch-service |
+| `emergency-ops-triage` | triage-service |
+| `emergency-ops-otel-collector` | OTel Collector (ADOT), recibe OTLP y exporta a X-Ray/Prometheus |
+| `emergency-ops-prometheus` | Scrapea métricas de dispatch/triage/Collector |
+| `emergency-ops-grafana` | Dashboard de SLIs |
+
+### Base de datos
+- RDS PostgreSQL (`db.t4g.micro`) en subnets privadas, sin acceso público
+- Connection string generada por Terraform y guardada en Secrets Manager (nunca en texto plano
+  en el código ni en tfvars)
+
+### Contenedores
+- 2 repositorios ECR (`emergency-ops-dispatch`, `emergency-ops-triage`) con lifecycle policy
+  (mantiene las últimas 10 imágenes)
+
+### Observabilidad
+- OTel Collector: config en SSM Parameter Store, inyectada como env var al contenedor
+- Prometheus: scrape config también vía SSM, mismo mecanismo
+- Grafana: datasources (Prometheus + CloudWatch nativo) y dashboard *"Emergency Ops - SLIs"*
+  (6 paneles) provisionados automáticamente al arrancar el contenedor
+- AWS X-Ray como backend de trazas (exporter nativo del Collector)
+- CloudWatch Logs (driver `awslogs`) + Container Insights para CPU/memoria real de los
+  contenedores
 
 ### Load Balancing
-- Application Load Balancer (ALB)
-- 2 Target Groups (uno por servicio)
-- Path-based routing (/dispatch, /triage)
+- ALB con path-based routing (`/dispatch*` → dispatch, `/triage*` → triage) y un listener
+  adicional en `:3000` → Grafana
 
-### Logging & Monitoring
-- CloudWatch Log Groups
-- CloudWatch Container Insights
+### Seguridad / Config
+- IAM roles con permisos mínimos por componente (no un rol único compartido)
+- Secrets Manager: connection string de RDS, password de admin de Grafana (generado por
+  Terraform, nunca hardcodeado)
+- SSM Parameter Store: configuración de Collector/Prometheus/Grafana
+- ECS Exec habilitado en `triage` (rol con permisos `ssmmessages:*`) para poder entrar a una
+  shell del contenedor sin exponer la RDS a internet — ver sección de debugging abajo
 
-### Security
-- Security Groups con reglas específicas
-- IAM Roles y Policies
-- No public IPs en tareas (excepto ALB)
-
-## 🔒 Configuración de Backend Remoto
-
-Para usar S3 como almacenamiento del estado (recomendado en equipos):
-
-1. Crear bucket S3 y tabla DynamoDB:
-```bash
-aws s3api create-bucket --bucket terraform-state-emergency-ops --region us-east-1
-aws dynamodb create-table \
-  --table-name terraform-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST
-```
-
-2. Descomentar backend en `provider.tf`:
-```hcl
-backend "s3" {
-  bucket         = "terraform-state-emergency-ops"
-  key            = "emergency-ops/terraform.tfstate"
-  region         = "us-east-1"
-  encrypt        = true
-  dynamodb_table = "terraform-locks"
-}
-```
-
-3. Reinicializar:
-```bash
-terraform init
-```
-
-## 📝 Variables Principales
+## 📝 Variables principales
 
 | Variable | Descripción | Default |
 |----------|-------------|---------|
-| `aws_region` | Región AWS | us-east-1 |
-| `environment` | Ambiente (dev/staging/prod) | dev |
-| `vpc_cidr` | CIDR del VPC | 10.0.0.0/16 |
-| `dispatch_cpu` | CPU para task de Dispatch | 256 |
-| `dispatch_memory` | Memoria (MB) para Dispatch | 512 |
-| `triage_cpu` | CPU para task de Triage | 256 |
-| `triage_memory` | Memoria (MB) para Triage | 512 |
-| `enable_autoscaling` | Habilitar auto-scaling | true |
+| `aws_region` | Región AWS | `us-east-1` |
+| `environment` | Ambiente (dev/staging/prod) | — (requerida) |
+| `vpc_cidr` | CIDR del VPC | `10.0.0.0/16` |
+| `dispatch_cpu` / `dispatch_memory` | CPU/memoria de la task de dispatch | `256` / `512` |
+| `triage_cpu` / `triage_memory` | CPU/memoria de la task de triage | `256` / `512` |
+| `triage_db_instance_class` | Clase de instancia RDS | `db.t4g.micro` |
+| `otel_collector_cpu` / `_memory` | CPU/memoria del Collector | `256` / `512` |
+| `prometheus_cpu` / `_memory` | CPU/memoria de Prometheus | `256` / `512` |
+| `grafana_cpu` / `_memory` | CPU/memoria de Grafana | `256` / `512` |
+| `dispatch_image_uri` / `triage_image_uri` | URI de imagen en ECR (la actualiza CI/CD) | ver `dev.tfvars` |
+| `enable_autoscaling` | Habilitar auto-scaling de dispatch/triage | `true` (`false` en dev) |
 
-## 🧹 Destruir la Infraestructura
+## 💰 Operar el ambiente — pausar/reanudar para no generar costo
+
+Los NAT Gateways y el ALB no tienen estado "detenido" (solo se pueden borrar y recrear), pero el
+cómputo (ECS Fargate) y la RDS sí:
+
+**Pausar** (deja NAT Gateways + ALB corriendo, que son el costo fijo menor; corta el costo
+variable de cómputo):
+```bash
+for svc in dispatch triage otel-collector prometheus grafana; do
+  aws ecs update-service --cluster emergency-ops-cluster --service "emergency-ops-$svc" --desired-count 0 --region us-east-1
+done
+aws rds stop-db-instance --db-instance-identifier emergency-ops-triage-db --region us-east-1
+```
+
+**Reanudar**:
+```bash
+aws rds start-db-instance --db-instance-identifier emergency-ops-triage-db --region us-east-1
+for svc in dispatch triage otel-collector prometheus grafana; do
+  aws ecs update-service --cluster emergency-ops-cluster --service "emergency-ops-$svc" --desired-count 1 --region us-east-1
+done
+```
+
+RDS detenida se reinicia sola a los 7 días si no la levantás vos — no es un problema si vas a
+retomar en menos de una semana.
+
+## 🔍 Generar tráfico de prueba
+
+```powershell
+.\scripts\generate-demo-traffic.ps1
+.\scripts\generate-demo-traffic.ps1 -Rounds 10 -DelayMs 200   # más volumen
+```
+
+Dispara una mezcla de requests válidas (una por cada prioridad de triage) e inválidas (400/404,
+y eventualmente 503 cuando se agota el pool de ambulancias de dispatch) para que Grafana, X-Ray
+y CloudWatch Logs Insights muestren datos realistas, no solo el camino feliz.
+
+## 🐛 Debugging: conectarse a la RDS sin exponerla a internet
+
+`triage` tiene ECS Exec habilitado. Requiere el
+[Session Manager Plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+instalado localmente.
+
+```bash
+TASK_ARN=$(aws ecs list-tasks --cluster emergency-ops-cluster --service-name emergency-ops-triage --desired-status RUNNING --region us-east-1 --query 'taskArns[0]' --output text)
+
+aws ecs execute-command --cluster emergency-ops-cluster --task "$TASK_ARN" \
+  --container emergency-ops-triage --interactive --command "/bin/sh" --region us-east-1
+
+# Dentro del contenedor (Alpine, sin cliente psql preinstalado):
+apk add --no-cache postgresql-client
+psql "$DATABASE_URL"
+```
+
+## 📈 Monitoreo y visualización
+
+| Qué | Cómo |
+|---|---|
+| **Grafana** | `http://<alb_dns_name>:3000` — user `admin`, password: `aws secretsmanager get-secret-value --secret-id emergency-ops-grafana-admin-password --region us-east-1 --query SecretString --output text` |
+| **Dashboard de SLIs** | `http://<alb_dns_name>:3000/d/emergency-ops-slis` |
+| **X-Ray** | Consola AWS → `https://console.aws.amazon.com/xray/home?region=us-east-1#/traces` (o `aws xray get-trace-summaries`) |
+| **CloudWatch Logs** | `aws logs tail /ecs/emergency-ops-dispatch --follow --region us-east-1` (y `-triage`, `-otel-collector`, `-prometheus`, `-grafana`) |
+| **Container Insights** | CloudWatch → Container Insights → Clusters → `emergency-ops-cluster` |
+| **Estado de los servicios** | `aws ecs describe-services --cluster emergency-ops-cluster --services emergency-ops-dispatch emergency-ops-triage emergency-ops-otel-collector emergency-ops-prometheus emergency-ops-grafana --region us-east-1` |
+
+## 🧹 Destruir la infraestructura
 
 ```bash
 terraform destroy -var-file="environments/dev.tfvars"
 ```
 
-## 📚 Despliegue de Imágenes Docker
+⚠️ Esto borra todo, incluida la RDS (sin snapshot final en `dev`, ver `db.tf` —
+`skip_final_snapshot = var.environment != "prod"`).
 
-Antes de aplicar Terraform, necesitas:
+## 📚 Documentación adicional
 
-1. Crear ECR repositories:
-```bash
-aws ecr create-repository --repository-name emergency-ops-dispatch --region us-east-1
-aws ecr create-repository --repository-name emergency-ops-triage --region us-east-1
-```
-
-2. Compilar y push de imágenes:
-```bash
-cd emergency-ops
-docker build -t dispatch-service services/dispatch/
-docker build -t triage-service services/triage/
-
-# Tag y push a ECR
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <account_id>.dkr.ecr.us-east-1.amazonaws.com
-docker tag dispatch-service:latest <account_id>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-dispatch:latest
-docker tag triage-service:latest <account_id>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-triage:latest
-
-docker push <account_id>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-dispatch:latest
-docker push <account_id>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-triage:latest
-```
-
-3. Actualizar variables con URIs del ECR:
-```bash
-terraform apply \
-  -var-file="environments/dev.tfvars" \
-  -var="dispatch_image_uri=<account_id>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-dispatch:latest" \
-  -var="triage_image_uri=<account_id>.dkr.ecr.us-east-1.amazonaws.com/emergency-ops-triage:latest"
-```
-
-## 🔍 Monitoreo
-
-- **CloudWatch Logs**: Ver logs de servicios en `/ecs/emergency-ops-dispatch` y `/ecs/emergency-ops-triage`
-- **Container Insights**: Métricas de contenedores en CloudWatch
-- **ALB Metrics**: Health checks y request counts en CloudWatch
+- [docs/architecture.drawio](docs/architecture.drawio) — diagrama de arquitectura completo
+- [docs/Reporte_Tecnico_Emergency_Ops.docx](docs/Reporte_Tecnico_Emergency_Ops.docx) — reporte
+  técnico: arquitectura, decisiones de diseño, análisis de overhead de OTel
+- [docs/GITHUB_OIDC.md](docs/GITHUB_OIDC.md) — cómo está configurado el IAM Role OIDC
+- [emergency-ops/docs/OTEL_OVERHEAD_BENCHMARK.md](https://github.com/cristiancave/emergency-ops/blob/main/docs/OTEL_OVERHEAD_BENCHMARK.md) —
+  metodología y resultados completos del benchmark de overhead
 
 ## 📞 Soporte
 
-Para más información sobre Terraform: https://www.terraform.io/docs
-Para más información sobre AWS ECS: https://docs.aws.amazon.com/ecs/
+Terraform: https://www.terraform.io/docs · AWS ECS: https://docs.aws.amazon.com/ecs/
