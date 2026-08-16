@@ -101,6 +101,12 @@ variable "triage_image_uri" {
   default     = "triage-service:latest" # Será reemplazado con ECR URI
 }
 
+variable "triage_db_instance_class" {
+  description = "RDS instance class for triage's PostgreSQL database"
+  type        = string
+  default     = "db.t4g.micro"
+}
+
 # Auto-scaling Variables
 variable "enable_autoscaling" {
   description = "Enable auto-scaling for services"

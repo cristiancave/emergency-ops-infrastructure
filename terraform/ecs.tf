@@ -212,6 +212,12 @@ resource "aws_ecs_task_definition" "triage" {
           value = tostring(var.triage_container_port)
         }
       ]
+      secrets = [
+        {
+          name      = "DATABASE_URL"
+          valueFrom = aws_secretsmanager_secret.triage_db_url.arn
+        }
+      ]
       healthCheck = {
         command     = ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${var.triage_container_port}/health || exit 1"]
         interval    = 30
@@ -249,7 +255,10 @@ resource "aws_ecs_service" "triage" {
 
   depends_on = [
     aws_lb_listener.main,
-    aws_iam_role.ecs_task_execution_role
+    aws_iam_role.ecs_task_execution_role,
+    aws_db_instance.triage,
+    aws_secretsmanager_secret_version.triage_db_url,
+    aws_iam_role_policy.ecs_task_execution_secrets
   ]
 
   tags = {
