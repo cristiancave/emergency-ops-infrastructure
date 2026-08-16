@@ -81,6 +81,10 @@ resource "aws_ecs_task_definition" "dispatch" {
         {
           name  = "DISPATCH_PORT"
           value = tostring(var.dispatch_container_port)
+        },
+        {
+          name  = "TRIAGE_SERVICE_URL"
+          value = "http://${aws_lb.main.dns_name}"
         }
       ]
       healthCheck = {
