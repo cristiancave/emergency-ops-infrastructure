@@ -1,3 +1,13 @@
+output "dispatch_ecr_repository_url" {
+  description = "URL of the ECR repository for dispatch service"
+  value       = aws_ecr_repository.dispatch.repository_url
+}
+
+output "triage_ecr_repository_url" {
+  description = "URL of the ECR repository for triage service"
+  value       = aws_ecr_repository.triage.repository_url
+}
+
 output "alb_dns_name" {
   description = "DNS name of the load balancer"
   value       = aws_lb.main.dns_name

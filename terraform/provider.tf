@@ -25,7 +25,6 @@ provider "aws" {
       Environment = var.environment
       Project     = "emergency-ops"
       ManagedBy   = "Terraform"
-      CreatedAt   = timestamp()
     }
   }
 }
