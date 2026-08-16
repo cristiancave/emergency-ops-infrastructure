@@ -47,6 +47,30 @@ resource "aws_iam_role" "ecs_task_role" {
   }
 }
 
+# Permite `aws ecs execute-command` (shell interactivo dentro de un
+# contenedor) para debugging puntual, ej. conectarse a la RDS con psql
+# desde dentro de triage sin exponerla a internet. Ver ADR-015.
+resource "aws_iam_role_policy" "ecs_exec" {
+  name = "${var.project_name}-ecs-exec"
+  role = aws_iam_role.ecs_task_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # Dispatch Service - Task Definition
 resource "aws_ecs_task_definition" "dispatch" {
   family                   = "${var.project_name}-dispatch"
@@ -93,6 +117,10 @@ resource "aws_ecs_task_definition" "dispatch" {
         {
           name  = "OTEL_EXPORTER_OTLP_ENDPOINT"
           value = "otel-collector.${var.project_name}.local:4317"
+        },
+        {
+          name  = "OTEL_EXPORTER_OTLP_ENDPOINT_GCP"
+          value = var.gcp_otel_collector_host
         }
       ]
       healthCheck = {
@@ -231,6 +259,10 @@ resource "aws_ecs_task_definition" "triage" {
         {
           name  = "OTEL_EXPORTER_OTLP_ENDPOINT"
           value = "otel-collector.${var.project_name}.local:4317"
+        },
+        {
+          name  = "OTEL_EXPORTER_OTLP_ENDPOINT_GCP"
+          value = var.gcp_otel_collector_host
         }
       ]
       secrets = [
@@ -256,11 +288,12 @@ resource "aws_ecs_task_definition" "triage" {
 
 # Triage Service
 resource "aws_ecs_service" "triage" {
-  name            = "${var.project_name}-triage"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.triage.arn
-  desired_count   = var.triage_desired_count
-  launch_type     = "FARGATE"
+  name                   = "${var.project_name}-triage"
+  cluster                = aws_ecs_cluster.main.id
+  task_definition        = aws_ecs_task_definition.triage.arn
+  desired_count          = var.triage_desired_count
+  launch_type            = "FARGATE"
+  enable_execute_command = true
 
   network_configuration {
     subnets          = aws_subnet.private[*].id

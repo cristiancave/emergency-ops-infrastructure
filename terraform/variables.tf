@@ -176,3 +176,11 @@ variable "memory_target" {
   type        = number
   default     = 80
 }
+
+# Cross-cloud: segundo Collector en GCP (Cloud Run), ver terraform-gcp/.
+# Host sin esquema -- dispatch/triage lo usan con otlptracehttp (TLS).
+variable "gcp_otel_collector_host" {
+  description = "Host (sin esquema) del OTel Collector en GCP Cloud Run, para exportación cross-cloud opcional"
+  type        = string
+  default     = "emergency-ops-otel-collector-jnuojzt7oa-uc.a.run.app"
+}
