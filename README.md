@@ -252,6 +252,16 @@ psql "$DATABASE_URL"
 | **Container Insights** | CloudWatch → Container Insights → Clusters → `emergency-ops-cluster` |
 | **Estado de los servicios** | `aws ecs describe-services --cluster emergency-ops-cluster --services emergency-ops-dispatch emergency-ops-triage emergency-ops-otel-collector emergency-ops-prometheus emergency-ops-grafana --region us-east-1` |
 
+### Correlación métricas ↔ trazas (exemplars)
+
+El dashboard de SLIs sirve `/metrics` en formato OpenMetrics con **exemplars**: cada muestra de
+un histograma (ej. p99 latency) lleva el `trace_id` de la request que la generó. En el panel
+"P99 Latency" de Grafana, los puntos con un diamante son exemplars — click ahí y luego en el
+link "Ver traza en X-Ray" abre esa traza puntual en la consola de X-Ray, ya con el `region`
+correcto. Es la tercera pata de la correlación cross-signal, junto con trazas ↔ logs (pivotear
+por `trace_id` en CloudWatch Logs Insights, ver arriba). Detalle de la decisión en
+[ADR-017](docs/ADR.md).
+
 ## 🧹 Destruir la infraestructura
 
 ```bash

@@ -473,3 +473,50 @@ el mismo `TracerProvider` (`pkg/telemetry.go`, campo `GCPOTLPEndpoint`).
 - Es un exporter *best-effort* adicional: si el Collector de GCP no está disponible, no afecta
   el pipeline principal de AWS (son batchers independientes en el mismo `TracerProvider`).
 
+---
+
+## ADR-017: Exemplars en `/metrics` para correlación métricas ↔ trazas
+
+### Status
+ACCEPTED
+
+### Context
+La correlación cross-signal ya cubría trazas ↔ logs (`trace_id` en los logs JSON, ver
+ADR-anterior sobre logging estructurado) y trazas ↔ trazas cross-cloud (ADR-016), pero faltaba
+la tercera pata: métricas ↔ trazas. Sin eso, un pico en el panel de p99 latency de Grafana no
+tiene forma de llevar directo a una traza concreta que lo explique — hay que ir a buscarla a
+mano por rango de tiempo.
+
+El SDK de OTel para Go ya captura **exemplars** por default (desde v1.31 aprox., estable, no
+experimental): cada medición de un histograma hecha con un span activo en el contexto queda
+como candidata a exemplar (`exemplar.TraceBasedFilter`, el filtro default), sin tocar código de
+instrumentación. El exporter de Prometheus (`go.opentelemetry.io/otel/exporters/prometheus`)
+también sabe serializarlos — la única pieza que faltaba era la exposición: el formato de texto
+clásico de Prometheus no puede llevar exemplars, solo **OpenMetrics** sí.
+
+### Decision
+- `pkg/telemetry.go`: cambiar el handler de `/metrics` de `promhttp.Handler()` (formato clásico)
+  a `promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{EnableOpenMetrics:
+  true})`.
+- Prometheus (`terraform/monitoring.tf`): agregar el flag `--enable-feature=exemplar-storage` —
+  sin él, Prometheus descarta los exemplars del scrape aunque vengan en el payload.
+- Grafana: en el datasource de Prometheus, `jsonData.exemplarTraceIdDestinations` con un link
+  externo a la consola de X-Ray parametrizado por `trace_id` (no hay datasource nativo de trazas
+  para X-Ray tipo Tempo/Jaeger, así que el link es una URL directa en vez de una integración de
+  datasource-a-datasource).
+
+### Rationale
+- No hizo falta tocar la instrumentación de negocio (spans custom, otelhttp, otelsql) — los
+  exemplars son un efecto automático de tener trazas + métricas ya cableadas correctamente sobre
+  el mismo contexto, que es justo lo que este proyecto ya tenía. El gap era puramente de
+  exposición/formato, no de datos.
+- Alternativa descartada: correlacionar a mano en Grafana vía time range + `trace_id` buscado en
+  logs — funciona, pero es exactamente el flujo manual que un exemplar-link automatiza.
+
+### Consequences
+- El link del exemplar apunta a la consola de X-Ray, no a un panel embebido de Grafana — un
+  click extra respecto a tener Tempo/Jaeger como datasource nativo, mismo tradeoff ya aceptado
+  en ADR-016 por la limitación de Cloud Run.
+- OpenMetrics es un superset compatible del formato de texto de Prometheus — no rompe scrapers
+  existentes que no pidan explícitamente ese `Accept` header.
+

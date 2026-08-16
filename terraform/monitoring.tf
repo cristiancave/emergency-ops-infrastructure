@@ -151,8 +151,12 @@ resource "aws_ecs_task_definition" "prometheus" {
       # la env var (inyectada por SSM vía "secrets") y recién ahí arrancamos
       # el binario real. Evita tener que hornear una imagen custom.
       entryPoint = ["/bin/sh", "-c"]
+      # --enable-feature=exemplar-storage: sin esto Prometheus descarta los
+      # exemplars (trace_id) que vienen en el scrape aunque el exporter los
+      # mande en formato OpenMetrics — la correlación métricas -> trazas
+      # depende de este flag.
       command = [
-        "echo \"$PROMETHEUS_CONFIG_YAML\" > /etc/prometheus/prometheus.yml && exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --web.listen-address=:9090"
+        "echo \"$PROMETHEUS_CONFIG_YAML\" > /etc/prometheus/prometheus.yml && exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --web.listen-address=:9090 --enable-feature=exemplar-storage"
       ]
       portMappings = [
         { containerPort = 9090, hostPort = 9090, protocol = "tcp" }
@@ -229,6 +233,18 @@ resource "aws_ssm_parameter" "grafana_datasources" {
         access    = "proxy"
         url       = "http://prometheus.${var.project_name}.local:9090"
         isDefault = true
+        jsonData = {
+          # El backend de trazas es X-Ray (no Tempo/Jaeger), así que no hay
+          # datasource nativo de trazas para linkear el exemplar - se arma
+          # como link externo a la consola de X-Ray con el trace_id.
+          exemplarTraceIdDestinations = [
+            {
+              name            = "trace_id"
+              url             = "https://console.aws.amazon.com/xray/home?region=${var.aws_region}#/traces/$${__value.raw}"
+              urlDisplayLabel = "Ver traza en X-Ray"
+            }
+          ]
+        }
       },
       {
         name = "CloudWatch"
@@ -340,20 +356,26 @@ resource "aws_ssm_parameter" "grafana_dashboard_json" {
         gridPos    = { h = 8, w = 12, x = 0, y = 16 }
         targets = [
           {
-            namespace  = "ECS/ContainerInsights"
-            metricName = "CpuUtilized"
-            statistic  = "Average"
-            dimensions = { ClusterName = var.ecs_cluster_name, ServiceName = "${var.project_name}-dispatch" }
-            region     = var.aws_region
-            refId      = "A"
+            namespace        = "AWS/ECS"
+            metricName       = "CPUUtilization"
+            statistic        = "Average"
+            dimensions       = { ClusterName = var.ecs_cluster_name, ServiceName = "${var.project_name}-dispatch" }
+            region           = var.aws_region
+            refId            = "A"
+            queryMode        = "Metrics"
+            metricQueryType  = 0
+            metricEditorMode = 0
           },
           {
-            namespace  = "ECS/ContainerInsights"
-            metricName = "CpuUtilized"
-            statistic  = "Average"
-            dimensions = { ClusterName = var.ecs_cluster_name, ServiceName = "${var.project_name}-triage" }
-            region     = var.aws_region
-            refId      = "B"
+            namespace        = "AWS/ECS"
+            metricName       = "CPUUtilization"
+            statistic        = "Average"
+            dimensions       = { ClusterName = var.ecs_cluster_name, ServiceName = "${var.project_name}-triage" }
+            region           = var.aws_region
+            refId            = "B"
+            queryMode        = "Metrics"
+            metricQueryType  = 0
+            metricEditorMode = 0
           }
         ]
       },
