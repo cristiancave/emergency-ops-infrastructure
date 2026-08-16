@@ -120,6 +120,32 @@ variable "otel_collector_memory" {
   default     = 512
 }
 
+# Prometheus Variables
+variable "prometheus_cpu" {
+  description = "CPU units for the Prometheus task"
+  type        = number
+  default     = 256
+}
+
+variable "prometheus_memory" {
+  description = "Memory in MB for the Prometheus task"
+  type        = number
+  default     = 512
+}
+
+# Grafana Variables
+variable "grafana_cpu" {
+  description = "CPU units for the Grafana task"
+  type        = number
+  default     = 256
+}
+
+variable "grafana_memory" {
+  description = "Memory in MB for the Grafana task"
+  type        = number
+  default     = 512
+}
+
 # Auto-scaling Variables
 variable "enable_autoscaling" {
   description = "Enable auto-scaling for services"

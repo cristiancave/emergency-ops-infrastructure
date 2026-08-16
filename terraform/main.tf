@@ -136,6 +136,14 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "Grafana UI"
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -159,6 +167,14 @@ resource "aws_security_group" "ecs_tasks" {
     to_port         = 65535
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
+  }
+
+  ingress {
+    description     = "Allow Prometheus to scrape dispatch/triage /metrics"
+    from_port       = 0
+    to_port         = 65535
+    protocol        = "tcp"
+    security_groups = [aws_security_group.prometheus.id]
   }
 
   egress {

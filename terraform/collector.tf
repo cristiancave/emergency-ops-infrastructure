@@ -69,6 +69,18 @@ resource "aws_ssm_parameter" "otel_collector_config" {
       telemetry = {
         metrics = {
           level = "detailed"
+          readers = [
+            {
+              pull = {
+                exporter = {
+                  prometheus = {
+                    host = "0.0.0.0"
+                    port = 8888
+                  }
+                }
+              }
+            }
+          ]
         }
       }
     }
@@ -176,6 +188,14 @@ resource "aws_security_group" "otel_collector" {
     security_groups = [aws_security_group.ecs_tasks.id]
   }
 
+  ingress {
+    description     = "Collector internal telemetry, scraped by Prometheus"
+    from_port       = 8888
+    to_port         = 8888
+    protocol        = "tcp"
+    security_groups = [aws_security_group.prometheus.id]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -220,6 +240,48 @@ resource "aws_service_discovery_service" "otel_collector" {
   }
 }
 
+# dispatch/triage también se registran en Cloud Map (además del ALB target
+# group que ya tienen): Prometheus necesita un nombre estable para poder
+# scrapear su /metrics, y el ALB no sirve para eso porque su path routing
+# solo conoce /dispatch* y /triage*, no /metrics.
+resource "aws_service_discovery_service" "dispatch" {
+  name = "dispatch"
+
+  dns_config {
+    namespace_id = aws_service_discovery_private_dns_namespace.internal.id
+
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+
+    routing_policy = "MULTIVALUE"
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+
+resource "aws_service_discovery_service" "triage" {
+  name = "triage"
+
+  dns_config {
+    namespace_id = aws_service_discovery_private_dns_namespace.internal.id
+
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+
+    routing_policy = "MULTIVALUE"
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+
 resource "aws_cloudwatch_log_group" "otel_collector" {
   name              = "/ecs/${var.project_name}-otel-collector"
   retention_in_days = var.environment == "prod" ? 30 : 7
@@ -246,11 +308,16 @@ resource "aws_ecs_task_definition" "otel_collector" {
       name      = "${var.project_name}-otel-collector"
       image     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
       essential = true
-      command   = ["--config=ssm:${aws_ssm_parameter.otel_collector_config.name}"]
+      # El esquema "ssm:" no está soportado como config provider en esta
+      # imagen (falla con "unsupported scheme"). En su lugar, ECS inyecta
+      # el YAML de SSM como variable de entorno (abajo, en "secrets") y el
+      # Collector lo lee con el provider estándar "env:".
+      command = ["--config=env:OTEL_COLLECTOR_CONFIG_YAML"]
       portMappings = [
         { containerPort = 4317, hostPort = 4317, protocol = "tcp" },
         { containerPort = 4318, hostPort = 4318, protocol = "tcp" },
         { containerPort = 8889, hostPort = 8889, protocol = "tcp" },
+        { containerPort = 8888, hostPort = 8888, protocol = "tcp" },
         { containerPort = 13133, hostPort = 13133, protocol = "tcp" }
       ]
       logConfiguration = {
@@ -263,6 +330,12 @@ resource "aws_ecs_task_definition" "otel_collector" {
       }
       environment = [
         { name = "AWS_REGION", value = var.aws_region }
+      ]
+      secrets = [
+        {
+          name      = "OTEL_COLLECTOR_CONFIG_YAML"
+          valueFrom = aws_ssm_parameter.otel_collector_config.arn
+        }
       ]
       healthCheck = {
         command     = ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:13133 || exit 1"]

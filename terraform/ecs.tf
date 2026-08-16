@@ -130,6 +130,10 @@ resource "aws_ecs_service" "dispatch" {
     container_port   = var.dispatch_container_port
   }
 
+  service_registries {
+    registry_arn = aws_service_discovery_service.dispatch.arn
+  }
+
   depends_on = [
     aws_lb_listener.main,
     aws_iam_role.ecs_task_execution_role,
@@ -268,6 +272,10 @@ resource "aws_ecs_service" "triage" {
     target_group_arn = aws_lb_target_group.triage.arn
     container_name   = "${var.project_name}-triage"
     container_port   = var.triage_container_port
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.triage.arn
   }
 
   depends_on = [

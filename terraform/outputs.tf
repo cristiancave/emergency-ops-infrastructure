@@ -8,6 +8,16 @@ output "triage_ecr_repository_url" {
   value       = aws_ecr_repository.triage.repository_url
 }
 
+output "grafana_url" {
+  description = "URL to access Grafana (admin password in Secrets Manager)"
+  value       = "http://${aws_lb.main.dns_name}:3000"
+}
+
+output "grafana_admin_password_secret" {
+  description = "Secrets Manager secret name holding the Grafana admin password"
+  value       = aws_secretsmanager_secret.grafana_admin_password.name
+}
+
 output "alb_dns_name" {
   description = "DNS name of the load balancer"
   value       = aws_lb.main.dns_name
