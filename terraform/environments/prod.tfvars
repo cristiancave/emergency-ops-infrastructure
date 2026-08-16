@@ -1,7 +1,7 @@
-aws_region          = "us-east-1"
-environment         = "prod"
-project_name        = "emergency-ops"
-availability_zones  = 3
+aws_region         = "us-east-1"
+environment        = "prod"
+project_name       = "emergency-ops"
+availability_zones = 3
 
 # VPC
 vpc_cidr = "10.2.0.0/16"
